@@ -175,6 +175,8 @@ test('keep rebuild retains the account, fingerprint and credential file', () => 
   assert.equal(vm.claude.access_token, undefined)
   assert.equal(vm.fingerprint.hostname, 'kept-host')
   assert.equal(vm.fingerprint.device_id, 'a'.repeat(64))
+  assert.equal(vm.fingerprint.guest_machine_id, 'b'.repeat(32))
+  assert.equal(fs.readFileSync(path.join(root, 'vms', id, 'machine-id'), 'utf8').trim(), 'b'.repeat(32))
   assert.equal(vm.stats.calls, 4)
   assert.equal(vm.node_id, 'node-a')
   assert.equal(vm.schedulable, true)
@@ -182,6 +184,36 @@ test('keep rebuild retains the account, fingerprint and credential file', () => 
   assert.equal(fs.readFileSync(computer, 'utf8'), '{"hostname":"kept-host"}')
   assert.equal(fs.existsSync(path.join(root, 'vms', id, 'cli-home', '.claude', 'projects')), false)
   fs.rmSync(root, { recursive: true, force: true })
+})
+
+test('keep mode with a malformed machine-id regenerates instead of pinning it', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-recreate-bad-keep-'))
+  const id = 'vm-12'
+  try {
+    fs.mkdirSync(path.join(root, 'vms'), { recursive: true })
+    const prev = {
+      id,
+      name: '12',
+      kernel: 'ubuntu-24.04',
+      claude: { email: 'keep@kin.test' },
+      fingerprint: { hostname: 'kept-host', device_id: 'a'.repeat(64), guest_machine_id: 'not-a-machine-id' },
+    }
+    fs.writeFileSync(path.join(root, 'vms', `${id}.json`), JSON.stringify(prev))
+    const record = buildRecreatedVmRecord(prev, undefined, { mode: 'keep' })
+    assert.notEqual(record.fingerprint.guest_machine_id, 'not-a-machine-id')
+    assert.match(record.fingerprint.guest_machine_id, /^[0-9a-f]{32}$/)
+
+    const { vm, mode } = recreateVmFiles(root, prev, { mode: 'keep' })
+    assert.equal(mode, 'traits')
+    assert.match(vm.fingerprint.guest_machine_id, /^[0-9a-f]{32}$/)
+    assert.notEqual(vm.fingerprint.guest_machine_id, 'not-a-machine-id')
+    assert.equal(
+      fs.readFileSync(path.join(root, 'vms', id, 'machine-id'), 'utf8').trim(),
+      vm.fingerprint.guest_machine_id,
+    )
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
 })
 
 test('destroy missing container is a no-op', () => {

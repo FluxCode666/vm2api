@@ -709,6 +709,29 @@ export function prepareClaudeJsonForOfficialInit(homeDir, opts = {}) {
   return { ...wiped, official_login: !!login.wrote, official_login_error: login.error || null }
 }
 
+/**
+ * cli-node parks in its first-run prompt when it has no ~/.claude.json, and a
+ * hello exec has no stdin to answer it. Seed only the non-identity flags: no
+ * userID/machineID, so summarizeOfficialCcHome cannot adopt this as the official
+ * identity and the real IDs cli-node writes after hello still win.
+ */
+export function seedFirstRunClaudeJson(homeDir, { uid, gid } = {}) {
+  if (!homeDir) return { wrote: false, error: 'homeDir required' }
+  fs.mkdirSync(homeDir, { recursive: true })
+  const file = path.join(homeDir, '.claude.json')
+  fs.writeFileSync(
+    file,
+    `${JSON.stringify({ hasCompletedOnboarding: true, hasTrustDialogAccepted: true, theme: 'dark' }, null, 2)}\n`,
+    { encoding: 'utf8', mode: 0o600 },
+  )
+  if (uid != null && gid != null) {
+    try {
+      fs.chownSync(file, uid, gid)
+    } catch {}
+  }
+  return { wrote: true, file }
+}
+
 export function officialCcShouldForceRefresh(homeDir, vm = {}) {
   const cred = readWorkerCredentialFile(homeDir)
   if (cred?.expires_at) return needsRefresh(cred.expires_at)
@@ -815,6 +838,8 @@ export function buildOfficialCcDockerArgs({
       env: [
         'HOME=/home/kincli',
         'TMPDIR=/home/kincli/.cache/tmp',
+        // Same home slot-shell points at, so the seeded first-run file is the one read.
+        'CLAUDE_CONFIG_DIR=/home/kincli/.claude',
         `TZ=${timezone}`,
         `LANG=${locale}`,
         `LC_ALL=${locale}`,
@@ -833,6 +858,9 @@ export function buildOfficialCcDockerArgs({
         'ANTHROPIC_AUTH_TOKEN=',
       ],
       workdir: '/home/kincli',
+      // Attached but already at EOF stdin: a residual prompt cannot park forever.
+      // No tty: `docker exec -t` with stdout in a file injects CR and breaks JSON.parse.
+      interactive: true,
     },
   )
 }
@@ -859,6 +887,21 @@ export function officialCcTurnSucceeded({ code, timedOut, raw, slash }) {
     return false
   }
   return !!parsed && typeof parsed === 'object' && !parsed.is_error && !parsed.error
+}
+
+/** One hello/usage turn may not sit on the slot longer than this. */
+export const OFFICIAL_CC_TURN_CAP_MS = 90_000
+
+/** The err file is written but was never read; its first bytes are the only diagnosis. */
+export function officialHelloError(hello, errFile) {
+  const base = hello?.timed_out
+    ? 'official claude hello timed out'
+    : hello?.error || `official claude hello exited ${hello?.code ?? 'unknown'}`
+  let excerpt = ''
+  try {
+    excerpt = fs.readFileSync(errFile, 'utf8').slice(0, 600).trim()
+  } catch {}
+  return excerpt ? `${base}: ${excerpt}` : base
 }
 
 export async function runOfficialCcTurn({
@@ -890,7 +933,14 @@ export async function runOfficialCcTurn({
     }),
     { stdio: ['ignore', out, err] },
   )
-  const finished = await waitExit(child, timeoutMs)
+  // SIGTERM only reaches the docker client; a timeout must also reap the in-container CLI.
+  const cap = Math.min(Number(timeoutMs) || OFFICIAL_CC_TURN_CAP_MS, OFFICIAL_CC_TURN_CAP_MS)
+  const finished = await waitExit(child, cap)
+  if (finished.timed_out) {
+    try {
+      stopOfficialCcLeftovers(vmId, vm)
+    } catch {}
+  }
   try {
     fs.closeSync(out)
   } catch {}
@@ -1184,6 +1234,8 @@ export async function runOfficialCcBootstrap(rawOpts = {}) {
       })
       return { ok: false, error: status.error, status }
     }
+    // Before the hello turn: an interactive first-run prompt has no stdin to answer.
+    seedFirstRunClaudeJson(homeDir, { uid, gid })
     writeOfficialCcStatus(homeDir, {
       status: 'running',
       vm_id: vmId,
@@ -1233,6 +1285,25 @@ export async function runOfficialCcBootstrap(rawOpts = {}) {
       vm,
     })
     helloOk = !!hello.ok
+    if (!helloOk) {
+      // Nothing after hello can succeed without it; report step=hello now instead
+      // of walking usage/profile/seed for another timeout window.
+      const status = writeOfficialCcStatus(homeDir, {
+        status: 'error',
+        vm_id: vmId,
+        started_at: startedAt,
+        finished_at: new Date().toISOString(),
+        claude_version: claudeVersion,
+        wiped: wiped.wiped,
+        official_login: true,
+        hello_ok: false,
+        exit_code: hello.code ?? null,
+        force,
+        step: 'hello',
+        error: officialHelloError(hello, path.join(homeDir, '.claude', 'kin-official-hello.err')),
+      })
+      return { ok: false, error: status.error, status }
+    }
     const turn = ({ prompt: text, outFile, errFile }) =>
       runTurn({ vmId, uid, gid, timezone, locale, prompt: text, outFile, errFile, timeoutMs, vm })
     writeOfficialCcStatus(homeDir, {

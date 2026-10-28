@@ -20,6 +20,7 @@ import { slotHost } from './slot-host.mjs'
 import {
   applyGeneratedFingerprint,
   generateWorkstationFingerprint,
+  MACHINE_ID_RE,
   takenFingerprintKeys,
   writeGuestMachineIdFile,
 } from '../identity/workstation-fingerprint.mjs'
@@ -103,8 +104,13 @@ function keptAccount(prev) {
   return { claude, codex }
 }
 
+/** Keep mode only preserves an identity that is actually on disk; a malformed id regenerates. */
+function keepsIdentity(prev, mode) {
+  return mode === 'keep' && MACHINE_ID_RE.test(String(prev?.fingerprint?.guest_machine_id || ''))
+}
+
 export function buildRecreatedVmRecord(prev, generated, { mode = 'traits' } = {}) {
-  const keep = mode === 'keep'
+  const keep = keepsIdentity(prev, mode)
   const pack = keep
     ? {
         ...(prev?.fingerprint && typeof prev.fingerprint === 'object' ? prev.fingerprint : {}),
@@ -181,7 +187,7 @@ export function buildRecreatedVmRecord(prev, generated, { mode = 'traits' } = {}
 
 export function recreateVmFiles(projectRoot, prev, { mode = 'traits' } = {}) {
   if (!projectRoot || !prev?.id) throw new Error('projectRoot and vm id required')
-  const keep = mode === 'keep'
+  const keep = keepsIdentity(prev, mode)
   wipeSlotHome(projectRoot, prev.id, { keepData: keep })
   const generated = keep
     ? null

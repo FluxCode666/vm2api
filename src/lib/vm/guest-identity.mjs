@@ -14,7 +14,7 @@ import { applyOfficialFingerprintToVm } from '../identity/official-fingerprint.m
 import { isHostKernel } from '../identity/workstation-profile.mjs'
 import { syncWorkerTelemetry } from './vm-runtime.mjs'
 import { slotHost } from './slot-host.mjs'
-import { isGeneratedHostname } from '../identity/workstation-fingerprint.mjs'
+import { isGeneratedHostname, isPlaceholderHostname } from '../identity/workstation-fingerprint.mjs'
 
 export const GUEST_IDENTITY_SCHEMA = '1'
 
@@ -85,7 +85,7 @@ export function mergeGuestFingerprint(prev = {}, guest = {}) {
   const sessionId = prev.session_id || guest.session_id || ''
   const arch = stainlessArch(guest.arch || prev.stainless_arch)
   const os = stainlessOs(guest.goos || guest.os || prev.stainless_os)
-  const keepHost = isGeneratedHostname(prev.hostname)
+  const keepHost = isGeneratedHostname(prev.hostname) && !isPlaceholderHostname(prev.hostname)
   const hostname = keepHost ? prev.hostname : guest.hostname || prev.hostname || null
   const guestHostname = guest.hostname && guest.hostname !== hostname ? guest.hostname : prev.guest_hostname || null
   const hostLeak = isHostKernel(guest.kernel_release)

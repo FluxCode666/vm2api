@@ -7,6 +7,7 @@ import { normalizeTimezone } from '../../src/lib/core/timezone.mjs'
 import {
   applyGeneratedFingerprint,
   DEVICE_ID_RE,
+  ensureGuestMachineIdFile,
   generateWorkstationFingerprint,
   HOSTNAME_RE,
   isGeneratedHostname,
@@ -106,4 +107,24 @@ test('writeGuestMachineIdFile replaces a docker directory trap', () => {
   assert.equal(fs.statSync(dest).isFile(), true)
   assert.equal(fs.readFileSync(dest, 'utf8').trim(), 'ab'.repeat(16))
   fs.rmSync(root, { recursive: true, force: true })
+})
+
+test('ensureGuestMachineIdFile rewrites a bound file that drifted from the record', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-mid-ensure-'))
+  try {
+    const vm = { id: 'vm-05', fingerprint: { guest_machine_id: 'cd'.repeat(16) } }
+    const stale = writeGuestMachineIdFile(root, vm.id, 'ab'.repeat(16))
+    const before = fs.statSync(stale)
+    const written = ensureGuestMachineIdFile(root, vm)
+    assert.equal(written, stale)
+    assert.equal(fs.readFileSync(stale, 'utf8').trim(), 'cd'.repeat(16))
+    // A matching file is left alone (no rewrite, same mtime).
+    const after = fs.statSync(stale)
+    assert.equal(ensureGuestMachineIdFile(root, vm), stale)
+    assert.equal(fs.statSync(stale).mtimeMs, after.mtimeMs)
+    assert.equal(fs.readFileSync(stale, 'utf8').trim(), 'cd'.repeat(16))
+    assert.notEqual(before.size, 0)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
 })

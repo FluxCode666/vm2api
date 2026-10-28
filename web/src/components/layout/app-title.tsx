@@ -60,7 +60,7 @@ export function AppTitle({ version }: { version?: string }) {
               href={REPO_URL}
               target='_blank'
               rel='noreferrer'
-              title='github.com/dofastted/vm2api'
+              title='github.com/FluxCode666/vm2api'
               className={cn(CHIP_CLASS, CHIP_LINK_CLASS, CHIP_PAIR_CLASS)}
             >
               <IconGithub aria-hidden className='size-4 shrink-0' />

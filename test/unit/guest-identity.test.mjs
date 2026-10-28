@@ -193,6 +193,30 @@ test('merge keeps generated hostname and catalog kernel', () => {
   assert.equal(out.device_id, 'ab'.repeat(32))
 })
 
+test('merge lets the guest correct a placeholder DMI hostname', () => {
+  const out = mergeGuestFingerprint(
+    {
+      device_id: 'ab'.repeat(32),
+      hostname: 'system-product-name-b985d8',
+      guest_machine_id: 'cd'.repeat(16),
+      source: 'generated',
+    },
+    { hostname: 'real-host', arch: 'amd64', goos: 'linux' },
+  )
+  assert.equal(out.hostname, 'real-host')
+  // The guest value became the outbound hostname, so there is no separate guest-only name.
+  assert.equal(out.guest_hostname, null)
+})
+
+test('merge still keeps a generated hostname the guest disagrees with', () => {
+  const out = mergeGuestFingerprint(
+    { device_id: 'ab'.repeat(32), hostname: 'ubuntu-a3f1', guest_machine_id: 'cd'.repeat(16) },
+    { hostname: '05' },
+  )
+  assert.equal(out.hostname, 'ubuntu-a3f1')
+  assert.equal(out.guest_hostname, '05')
+})
+
 test('merge persists observed hardware without rotating stable identity', () => {
   const out = mergeGuestFingerprint(
     {

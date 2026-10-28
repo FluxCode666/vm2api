@@ -32,9 +32,15 @@ function seedFor(vmId) {
   return crypto.createHash('sha256').update(`kin-computer-stub:${vmId}`).digest('hex')
 }
 
+/** Emulates a QEMU/DMI default when kin-computer never received `-smbios type=1`. */
+function hostnameFor(seed) {
+  if (process.env.KIN_COMPUTER_STUB_PLACEHOLDER_HOST === '1') return `system-product-name-${seed.slice(0, 6)}`
+  return `wks${seed.slice(0, 14)}`
+}
+
 function writeKvm(out, vmId) {
   const seed = seedFor(vmId)
-  const hostname = `wks${seed.slice(0, 14)}`
+  const hostname = hostnameFor(seed)
   const machine_id = seed.slice(16, 48)
   const uuidRaw = seed.slice(0, 32)
   const uuid =
@@ -56,7 +62,7 @@ function writeKvm(out, vmId) {
 
 function writeDocker(out, vmId) {
   const seed = seedFor(vmId)
-  const hostname = `wks${seed.slice(0, 14)}`
+  const hostname = hostnameFor(seed)
   const machine_id = seed.slice(16, 48)
   const macBytes = Buffer.from(seed.slice(48, 60), 'hex')
   const mac = [...macBytes.slice(0, 6)].map((b) => b.toString(16).padStart(2, '0')).join(':')

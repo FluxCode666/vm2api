@@ -11,6 +11,13 @@ import { workstationFamily, workstationKernel, workstationSkuId } from './workst
 export const HOSTNAME_RE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/
 export const DEVICE_ID_RE = /^[0-9a-f]{64}$/i
 export const MACHINE_ID_RE = /^[0-9a-f]{32}$/i
+/**
+ * DMI strings QEMU/firmware ship when no `-smbios type=1` reached the guest.
+ * They satisfy HOSTNAME_RE once slugged (`system-product-name-b985d8`), so syntax
+ * alone cannot tell a real machine name from a placeholder.
+ */
+const PLACEHOLDER_HOST_RE =
+  /^(?:system-product-name|system-product-version|system-manufacturer|system-serial-number|base-board-product-name|base-board-manufacturer|default-string|to-be-filled-by-o-e-m|to-be-filled-by-oem|not-specified|not-applicable|unknown|kvm|red-hat)(?:-[0-9a-f]{4,12})?$/
 export const STANDARD_LOCALE = 'en_US.UTF-8'
 /** Locales a slot may be created with; the guest sees it as LANG and in the fingerprint. */
 export const SLOT_LOCALES = Object.freeze([STANDARD_LOCALE, 'zh_CN.UTF-8', 'ja_JP.UTF-8', 'C.UTF-8'])
@@ -21,6 +28,18 @@ export function isHexDeviceId(value) {
 
 export function isGeneratedHostname(value) {
   return HOSTNAME_RE.test(String(value || '').trim())
+}
+
+/** A DMI placeholder that a guest must never present as its hostname. */
+export function isPlaceholderHostname(value) {
+  // DMI strings reach us both slugged (`system-product-name-b985d8`) and raw
+  // (`System Product Name`); compare on one separator.
+  const text = String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+  return PLACEHOLDER_HOST_RE.test(text)
 }
 
 export function guestMachineIdPath(projectRoot, vmId) {
@@ -120,11 +139,16 @@ export function writeGuestMachineIdFile(projectRoot, vmId, machineId) {
 }
 
 export function ensureGuestMachineIdFile(projectRoot, vm) {
-  const id = String(vm?.fingerprint?.guest_machine_id || '').trim()
+  const id = String(vm?.fingerprint?.guest_machine_id || vm?.fingerprint?.machine_id || '')
+    .trim()
+    .toLowerCase()
   if (!MACHINE_ID_RE.test(id) || !vm?.id || !projectRoot) return null
   const dest = guestMachineIdPath(projectRoot, vm.id)
   try {
-    if (fs.existsSync(dest) && fs.statSync(dest).isFile()) return dest
+    if (fs.statSync(dest, { throwIfNoEntry: false })?.isFile()) {
+      const current = fs.readFileSync(dest, 'utf8').trim().toLowerCase()
+      if (current === id) return dest
+    }
   } catch {}
   return writeGuestMachineIdFile(projectRoot, vm.id, id)
 }

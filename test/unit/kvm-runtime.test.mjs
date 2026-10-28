@@ -7,6 +7,7 @@ import { RFC4122_UUID_RE } from '../../src/lib/identity/rfc4122-uuid.mjs'
 import {
   buildKvmRunArgs,
   computerDockerArgs,
+  dockerSlotIdentityIncomplete,
   shouldPublishComputer,
   ensureSlotGuestBinDir,
   slotGuestBinMountArgs,
@@ -253,7 +254,7 @@ test('kvm env coerces missing or invalid fingerprint uuid for QEMU', () => {
   fs.rmSync(root, { recursive: true, force: true })
 })
 
-test('kvm env uses fingerprint SMBIOS and does not carry smc or rom', () => {
+test('kvm env uses the slot record SMBIOS and does not carry smc or rom', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-kvm-fp-'))
   const kvmDir = path.join(root, 'kvm')
   fs.mkdirSync(path.join(kvmDir, 'fingerprint'), { recursive: true })
@@ -282,10 +283,11 @@ test('kvm env uses fingerprint SMBIOS and does not carry smc or rom', () => {
     kvmDir,
     shares: 'home,run',
   })
-  assert.ok(args.includes('KIN_KVM_SMBIOS_MANUFACTURER=Framework'))
-  assert.ok(args.includes('KIN_KVM_SMBIOS_PRODUCT=Laptop16'))
+  // The panel's vm.machine.smbios is authoritative; a stale fingerprint file must not win.
+  assert.ok(args.includes('KIN_KVM_SMBIOS_MANUFACTURER=Dell Inc.'))
+  assert.ok(args.includes('KIN_KVM_SMBIOS_PRODUCT=OptiPlex 7090'))
   assert.equal(
-    args.some((arg) => String(arg).includes('OptiPlex')),
+    args.some((arg) => String(arg).includes('Framework') || String(arg).includes('Laptop16')),
     false,
   )
   assert.equal(
@@ -299,6 +301,38 @@ test('kvm env uses fingerprint SMBIOS and does not carry smc or rom', () => {
   fs.rmSync(root, { recursive: true, force: true })
 })
 
+test('kvm env falls back to the fingerprint uuid when the record has none', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-kvm-fp-uuid-'))
+  const kvmDir = path.join(root, 'kvm')
+  fs.mkdirSync(path.join(kvmDir, 'fingerprint'), { recursive: true })
+  fs.writeFileSync(
+    path.join(kvmDir, 'fingerprint', 'qemu-smbios.args'),
+    ['-uuid', 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', ''].join('\n'),
+  )
+  const recordOnly = { ...vm, machine: { ...vm.machine, smbios: { ...vm.machine.smbios, uuid: '' } } }
+  const args = buildKvmRunArgs({
+    vm: recordOnly,
+    name: 'kin-02',
+    image: 'ghcr.io/example/kin-kvm-ubuntu:24.04',
+    hostName: 'guest-02',
+    network: 'kin-eg-px',
+    memory: '1g',
+    accel: 'tcg',
+    uid: 10002,
+    gid: 987,
+    home: '/data/vms/vm-02/cli-home',
+    runDir: '/data/vms/vm-02/run',
+    kvmDir,
+    shares: 'home,run',
+  })
+  const value = String(args.find((arg) => String(arg).startsWith('KIN_KVM_SMBIOS_UUID='))).slice(
+    'KIN_KVM_SMBIOS_UUID='.length,
+  )
+  assert.equal(value, 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee')
+  assert.match(value, RFC4122_UUID_RE)
+  fs.rmSync(root, { recursive: true, force: true })
+})
+
 test('docker computer mounts are read-only and use the persona MAC', () => {
   const args = computerDockerArgs({
     dir: '/data/vms/vm-02/kvm/fingerprint',
@@ -308,9 +342,42 @@ test('docker computer mounts are read-only and use the persona MAC', () => {
   assert.equal(args[args.indexOf('--mac-address') + 1], '3c:22:fb:f9:50:9d')
   assert.ok(args.includes('/data/vms/vm-02/kvm/fingerprint:/var/lib/kin-persona:ro'))
   assert.ok(args.includes('/data/vms/vm-02/kvm/fingerprint/system/etc/hostname:/etc/hostname:ro'))
+  assert.ok(args.includes('/data/vms/vm-02/kvm/fingerprint/system/etc/machine-id:/etc/machine-id:ro'))
+  assert.ok(args.includes('/data/vms/vm-02/kvm/fingerprint/system/etc/machine-id:/var/lib/dbus/machine-id:ro'))
   assert.ok(args.includes('/data/vms/vm-02/kvm/fingerprint/system/etc/kin-computer:/etc/kin-computer:ro'))
   assert.ok(args.includes('/data/vms/vm-02/kvm/fingerprint/system/dmi/id:/etc/kin-dmi:ro'))
   assert.ok(args.includes('/data/vms/vm-02/kvm/fingerprint/system/hardware:/etc/kin-hardware:ro'))
+})
+
+test('docker slot identity drift forces a rebuild only when mounts or hostname are missing', () => {
+  const vm = { id: 'vm-02', fingerprint: { hostname: 'ubuntu-a3f1' } }
+  const inspect = (mounts, hostname, { ok = true } = {}) => ({
+    ok,
+    stdout: ok ? `${mounts.map((dest) => `${dest}=/data/source`).join('|')}|${hostname}` : '',
+    stderr: ok ? '' : 'no such container',
+  })
+  // Created before the identity mounts existed: docker start cannot add them.
+  assert.equal(
+    dockerSlotIdentityIncomplete('kin-02', vm, {
+      run: () => inspect(['/home/kincli', '/run/kin'], 'ubuntu-a3f1'),
+    }),
+    true,
+  )
+  assert.equal(
+    dockerSlotIdentityIncomplete('kin-02', vm, {
+      run: () => inspect(['/home/kincli', '/run/kin', '/etc/hostname', '/etc/machine-id'], 'ubuntu-a3f1'),
+    }),
+    false,
+  )
+  // Mounts present but the container still carries the old hostname.
+  assert.equal(
+    dockerSlotIdentityIncomplete('kin-02', vm, {
+      run: () => inspect(['/etc/hostname', '/etc/machine-id'], 'system-product-name-b985d8'),
+    }),
+    true,
+  )
+  // A transient inspect error must never force a rebuild.
+  assert.equal(dockerSlotIdentityIncomplete('kin-02', vm, { run: () => inspect([], '', { ok: false }) }), false)
 })
 
 test('writeKernelConfig uses guest socket path and runtime_kind kvm', () => {

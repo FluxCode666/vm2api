@@ -35,7 +35,7 @@ import {
   KVM_BUILD_DIR,
 } from './os-catalog.mjs'
 import { slotMemory, slotDockerCpus, memoryMiB } from './machine-spec.mjs'
-import { ensureKvmMachineRecord, kvmContainerEnvIncomplete, kvmMachineFields } from './kvm-machine.mjs'
+import { ensureKvmMachineRecord, kvmContainerEnvIncomplete, kvmMachineFields, kvmSmbiosDrift } from './kvm-machine.mjs'
 import { probeLocalKvm } from './kvm-host.mjs'
 import { slotExecArgv } from './slot-exec.mjs'
 import { isDockerInspectNotFound } from './docker-container.mjs'
@@ -111,7 +111,8 @@ export function padVm(n) {
 export function nextNumericIndex(vms) {
   const used = new Set()
   for (const v of vms || []) {
-    const n = parseVmIndex(v?.name) ?? parseVmIndex(v?.id)
+    // The id is the slot's real key; a display name such as "05" would hide vm-03.
+    const n = parseVmIndex(v?.id) ?? parseVmIndex(v?.name)
     if (n) used.add(n)
   }
   let n = 1
@@ -250,6 +251,34 @@ export function containerHasKernelMount(name) {
   if (!r.ok) return false
   const dests = r.stdout.split(/\s+/)
   return dests.includes('/usr/local/bin/kin-kernel') || dests.includes('/usr/local/bin')
+}
+
+/**
+ * True when a Docker slot container cannot present the slot's persona identity.
+ * `docker start` cannot add a bind mount, so a container created before the
+ * identity mounts needs a rebuild to gain them. A failed inspect is false:
+ * a transient docker error must never force a rebuild.
+ */
+export function dockerSlotIdentityIncomplete(name, vm, { run = sh } = {}) {
+  const r = run([
+    'docker',
+    'inspect',
+    '--format',
+    '{{range .Mounts}}{{.Destination}}={{.Source}}|{{end}}{{.Config.Hostname}}',
+    name,
+  ])
+  if (!r.ok) return false
+  const text = String(r.stdout || '')
+  const split = text.lastIndexOf('|')
+  if (split < 0) return false
+  const dests = text
+    .slice(0, split)
+    .split('|')
+    .filter(Boolean)
+    .map((row) => row.slice(0, row.indexOf('=')))
+  if (!dests.includes('/etc/hostname') || !dests.includes('/etc/machine-id')) return true
+  const expected = String(vm?.fingerprint?.hostname || '').trim()
+  return !!expected && text.slice(split + 1).trim() !== expected
 }
 
 function vmWantsOuterSocks(vm) {
@@ -656,12 +685,11 @@ export function shouldReplaceSlotContainer({ existing, recreate = false, network
   return !!(wrongNet || wrongImg || wrongRuntime)
 }
 
-function kvmEnvPairs(vm, { uid, gid, memMb, accel, hostName, machineId, shares, smbios }) {
+function kvmEnvPairs(vm, { uid, gid, memMb, accel, hostName, machineId, shares, fingerprintUuid }) {
   const m = kvmMachineFields(vm)
-  // Current kin-kvm-entry requires these vars, then uses qemu-smbios.args for -smbios.
-  // A missing fingerprint field stays "-", never the OptiPlex default. smc_version and
-  // rom_hex have no device property, so they are not environment variables.
-  const s = smbios || m.smbios
+  // kin-kvm-entry reads these vars; the slot record is the only source for the
+  // type=1 record. The fingerprint file keeps only its uuid fallback.
+  const s = m.smbios
   const slotName = displayName(vm.id)
   return [
     `KIN_VM_ID=${vm.id}`,
@@ -681,7 +709,7 @@ function kvmEnvPairs(vm, { uid, gid, memMb, accel, hostName, machineId, shares, 
     `KIN_KVM_SMBIOS_VERSION=${s.version}`,
     `KIN_KVM_SMBIOS_FAMILY=${s.family}`,
     `KIN_KVM_SMBIOS_SERIAL=${s.serial}`,
-    `KIN_KVM_SMBIOS_UUID=${coerceRfc4122Uuid(s.uuid)}`,
+    `KIN_KVM_SMBIOS_UUID=${coerceRfc4122Uuid(s.uuid || fingerprintUuid)}`,
     `KIN_KVM_DISK_SERIAL=${m.disk_serial}`,
     `KIN_KVM_HOSTNAME=${hostName}`,
     `KIN_KVM_MACHINE_ID=${machineId}`,
@@ -840,6 +868,11 @@ export function computerDockerArgs({ dir, mac, hostOf = (p) => p }) {
     `${hostOf(dir)}:/var/lib/kin-persona:ro`,
     '-v',
     `${hostOf(path.join(etc, 'hostname'))}:/etc/hostname:ro`,
+    // Same persona directory as the hostname: containerComputer already validated it.
+    '-v',
+    `${hostOf(path.join(etc, 'machine-id'))}:/etc/machine-id:ro`,
+    '-v',
+    `${hostOf(path.join(etc, 'machine-id'))}:/var/lib/dbus/machine-id:ro`,
     '-v',
     `${hostOf(path.join(etc, 'kin-computer'))}:/etc/kin-computer:ro`,
     '-v',
@@ -873,8 +906,8 @@ export function buildKvmRunArgs({
   const mem = kvmContainerMemory(memory)
   const memMb = memoryMiB(memory)
   const machineId = String(vm.fingerprint?.guest_machine_id || vm.fingerprint?.machine_id || '').trim()
-  const smbios = readFingerprintSmbios(kvmDir)
-  const env = kvmEnvPairs(vm, { uid, gid, memMb, accel, hostName, machineId, shares, smbios })
+  const fingerprintUuid = readFingerprintSmbios(kvmDir)?.uuid || ''
+  const env = kvmEnvPairs(vm, { uid, gid, memMb, accel, hostName, machineId, shares, fingerprintUuid })
   const capAdd = KVM_CAPS.flatMap((cap) => ['--cap-add', cap])
   const device = accel === 'kvm' ? ['--device', '/dev/kvm'] : []
   return [
@@ -1034,7 +1067,11 @@ export async function startVmRuntime(vm, projectRoot, { recreate = false, routin
       image,
       runtime: runtimeKind(vm),
     }) ||
-    (kvm && existing && kvmContainerEnvIncomplete(name, { run: sh }))
+    (kvm && existing && kvmContainerEnvIncomplete(name, { run: sh })) ||
+    // Identity env/mounts bake in at docker run. A stopped container may be
+    // rebuilt to pick them up; a running one is never removed implicitly.
+    (kvm && existing && !existing.running && kvmSmbiosDrift(name, vm, { run: sh })) ||
+    (!kvm && existing && !existing.running && dockerSlotIdentityIncomplete(name, vm))
   if (replaceContainer) {
     // Container only. Host bind mounts (cli-home, run, kvm/, machine-id) stay.
     sh(['docker', 'rm', '-f', name])
@@ -1079,7 +1116,8 @@ export async function startVmRuntime(vm, projectRoot, { recreate = false, routin
   try {
     fs.rmSync(worker.kernelSocket, { force: true })
   } catch {}
-  const machineIdFile = ensureGuestMachineIdFile(projectRoot, vm)
+  // Still read by the remote push (SLOT_FILE_SETS.seed) and by keep-mode recreate.
+  ensureGuestMachineIdFile(projectRoot, vm)
   const hostOf = (p) => toHostPath(p, { projectRoot })
   const netName = slotNetworkForVm(vm)
   if (!netName || netName === 'host' || netName === 'bridge') {
@@ -1113,14 +1151,6 @@ export async function startVmRuntime(vm, projectRoot, { recreate = false, routin
       projectRoot,
     })
   } else {
-    const machineMounts = machineIdFile
-      ? [
-          '-v',
-          `${hostOf(machineIdFile)}:/etc/machine-id:ro`,
-          '-v',
-          `${hostOf(machineIdFile)}:/var/lib/dbus/machine-id:ro`,
-        ]
-      : []
     args = [
       'docker',
       'run',
@@ -1170,7 +1200,6 @@ export async function startVmRuntime(vm, projectRoot, { recreate = false, routin
         hostOf,
         projectRoot,
       }),
-      ...machineMounts,
       ...computerDockerArgs({ dir: computer.dir, mac: computer.mac, hostOf }),
       '-e',
       'HOME=/home/kincli',

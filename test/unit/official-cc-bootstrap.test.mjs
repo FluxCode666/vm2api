@@ -32,6 +32,11 @@ import {
   listOfficialCcVmIds,
   officialCcQuotaSucceeded,
   finalizeOfficialCcTelemetry,
+  OFFICIAL_CC_TURN_CAP_MS,
+  officialHelloError,
+  runOfficialCcBootstrap,
+  runOfficialCcTurn,
+  seedFirstRunClaudeJson,
 } from '../../src/lib/oauth/official-cc-bootstrap.mjs'
 import { OFFICIAL_CLI_VERSION } from '../../src/lib/identity/vm-identity.mjs'
 
@@ -709,4 +714,153 @@ test('bootstrap source never calls Anthropic from the host', () => {
     'utf8',
   )
   assert.equal(/probeVmUsage|host-anthropic|node-fetch/.test(src), false)
+})
+
+/**
+ * Fake docker on PATH. Only the hello turn — the exec running the slot's
+ * cli-node — hangs; the marker-scan reap (an `sh -c` exec that merely mentions
+ * the marker) and every other call return at once.
+ */
+function dockerStub(root, { helloStderr = '' } = {}) {
+  const bin = path.join(root, 'bin')
+  fs.mkdirSync(bin, { recursive: true })
+  const log = path.join(root, 'docker.log')
+  const script = [
+    '#!/bin/sh',
+    `printf '%s\\n' "$*" >> '${log}'`,
+    'case "$*" in',
+    '  *cli-node*)',
+    helloStderr ? `    printf '%s' '${helloStderr}' >&2` : '    :',
+    '    sleep 30',
+    '    ;;',
+    '  *) exit 0 ;;',
+    'esac',
+    '',
+  ].join('\n')
+  fs.writeFileSync(path.join(bin, 'docker'), script, { mode: 0o755 })
+  return { bin, log }
+}
+
+test('first-run seed answers onboarding without adopting the official identity', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-cc-seed-'))
+  try {
+    wipeOfficialFirstUseHome(dir)
+    assert.equal(fs.existsSync(path.join(dir, '.claude.json')), false)
+    const seeded = seedFirstRunClaudeJson(dir)
+    assert.equal(seeded.wrote, true)
+    const doc = JSON.parse(fs.readFileSync(path.join(dir, '.claude.json'), 'utf8'))
+    assert.equal(doc.hasCompletedOnboarding, true)
+    assert.equal(doc.hasTrustDialogAccepted, true)
+    // No identity: the real IDs cli-node writes after hello must still win.
+    assert.equal(doc.userID, undefined)
+    assert.equal(doc.machineID, undefined)
+    const summary = summarizeOfficialCcHome(dir)
+    assert.equal(summary.has_user_id, false)
+    assert.equal(summary.has_machine_id, false)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('hello exec is interactive but never allocates a tty', () => {
+  const args = buildOfficialCcDockerArgs({
+    vmId: 'vm-30',
+    uid: 10030,
+    gid: 987,
+    prompt: DEFAULT_HELLO_PROMPT,
+  })
+  assert.ok(args.includes('-i'))
+  // `docker exec -t` with stdout redirected to a file injects CR into the JSON.
+  assert.equal(args.includes('-t'), false)
+  assert.ok(args.includes('CLAUDE_CONFIG_DIR=/home/kincli/.claude'))
+})
+
+test('a hung hello turn is capped and the in-container CLI is reaped', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-cc-turn-cap-'))
+  const { bin, log } = dockerStub(root, { helloStderr: 'kin-stub: first-run prompt blocked' })
+  const prevPath = process.env.PATH
+  process.env.PATH = `${bin}:${prevPath}`
+  try {
+    const started = Date.now()
+    const turn = await runOfficialCcTurn({
+      vmId: 'vm-30',
+      uid: 10030,
+      gid: 987,
+      prompt: DEFAULT_HELLO_PROMPT,
+      outFile: path.join(root, 'hello.json'),
+      errFile: path.join(root, 'hello.err'),
+      timeoutMs: 800,
+    })
+    const elapsed = Date.now() - started
+    assert.equal(turn.ok, false)
+    assert.equal(turn.timed_out, true)
+    assert.ok(elapsed < 10_000, `elapsed ${elapsed}ms`)
+    assert.ok(elapsed < OFFICIAL_CC_TURN_CAP_MS)
+    const lines = fs.readFileSync(log, 'utf8').trim().split('\n')
+    // SIGTERM only reaches the docker client; the marker scan must also run.
+    assert.ok(
+      lines.some((line) => line.startsWith('exec ')),
+      `no reap exec in: ${lines.join(' | ')}`,
+    )
+  } finally {
+    process.env.PATH = prevPath
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('hello failure stops the bootstrap at step hello with the err excerpt', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-cc-fail-fast-'))
+  const vmId = 'vm-30'
+  const home = path.join(root, 'vms', vmId, 'cli-home')
+  fs.mkdirSync(path.join(home, '.claude'), { recursive: true })
+  fs.mkdirSync(path.join(home, '.kin'), { recursive: true })
+  fs.writeFileSync(
+    path.join(home, '.claude', 'credentials.json'),
+    JSON.stringify({ claudeAiOauth: { accessToken: 'a', refreshToken: 'r' } }),
+  )
+  fs.writeFileSync(path.join(home, '.kin', 'cli-node'), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
+  fs.writeFileSync(
+    path.join(root, 'vms', `${vmId}.json`),
+    JSON.stringify({
+      id: vmId,
+      name: '30',
+      kernel: 'ubuntu-24.04',
+      claude: { has_access: true, access_token: 'x', refresh_token: 'r' },
+    }),
+  )
+  const { bin } = dockerStub(root, { helloStderr: 'kin-stub: first-run prompt blocked' })
+  const prevPath = process.env.PATH
+  process.env.PATH = `${bin}:${prevPath}`
+  try {
+    const started = Date.now()
+    const res = await runOfficialCcBootstrap({ vmId, projectRoot: root, timeoutMs: 800 })
+    const elapsed = Date.now() - started
+    assert.equal(res.ok, false)
+    assert.equal(res.status.step, 'hello')
+    assert.equal(res.status.status, 'error')
+    assert.match(String(res.status.error), /kin-stub: first-run prompt blocked/)
+    // No usage/profile/seed walk after a failed hello.
+    assert.ok(elapsed < 10_000, `elapsed ${elapsed}ms`)
+  } finally {
+    process.env.PATH = prevPath
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('officialHelloError prefers the timeout reason and appends the stderr excerpt', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-cc-hello-err-'))
+  try {
+    const errFile = path.join(dir, 'kin-official-hello.err')
+    fs.writeFileSync(errFile, 'x'.repeat(600) + 'TAIL')
+    const message = officialHelloError({ timed_out: true, code: null }, errFile)
+    assert.equal(message.startsWith('official claude hello timed out: '), true)
+    assert.equal(message.includes('TAIL'), false)
+    assert.equal(
+      officialHelloError({ timed_out: false, code: 7, error: 'boom' }, path.join(dir, 'missing')).length > 0,
+      true,
+    )
+    assert.equal(officialHelloError({ timed_out: false, code: 7, error: 'boom' }, path.join(dir, 'missing')), 'boom')
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
 })

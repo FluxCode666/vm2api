@@ -5,7 +5,7 @@
  * control plane at an internal URL.
  */
 import { inspectLinuxAmd64Elf } from '../vm/wrap-cli-runtime.mjs'
-import { GITHUB_REPO, githubApiHeaders, isReleaseTag, normalizeTag, normalizeVersion } from './release.mjs'
+import { GITHUB_REPO, ASSET_REPO, githubApiHeaders, isReleaseTag, normalizeTag, normalizeVersion } from './release.mjs'
 
 export const KERNEL_RELEASE_ASSET = 'kin-kernel'
 export const CLI_NODE_RELEASE_ASSET = 'cli-node'
@@ -60,13 +60,13 @@ export function isAllowedKernelUrl(raw, { redirect = false } = {}) {
   }
   if (url.protocol !== 'https:' || url.username || url.password) return false
   if (url.hostname === 'api.github.com') {
-    return new RegExp(`^/repos/${GITHUB_REPO}/releases/(?:latest|tags/v\\d+\\.\\d+\\.\\d+|assets/\\d+)$`).test(
+    return new RegExp(`^/repos/${ASSET_REPO}/releases/(?:latest|tags/v\\d+\\.\\d+\\.\\d+|assets/\\d+)$`).test(
       url.pathname,
     )
   }
   if (url.hostname === 'github.com') {
     return new RegExp(
-      `^/${GITHUB_REPO}/releases/download/v\\d+\\.\\d+\\.\\d+/(?:${KERNEL_RELEASE_ASSET}|${CLI_NODE_RELEASE_ASSET}|${CC_NODE_RELEASE_ASSET}|${KERNEL_CRAG_RELEASE_ASSET})$`,
+      `^/${ASSET_REPO}/releases/download/v\\d+\\.\\d+\\.\\d+/(?:${KERNEL_RELEASE_ASSET}|${CLI_NODE_RELEASE_ASSET}|${CC_NODE_RELEASE_ASSET}|${KERNEL_CRAG_RELEASE_ASSET})$`,
     ).test(url.pathname)
   }
   return (
@@ -223,13 +223,13 @@ async function fetchReleaseBytes(startUrl, fetchImpl, maxBytes, label) {
 export async function downloadReleaseKernel({ tag = '', fetchImpl = globalThis.fetch } = {}) {
   if (!fetchImpl) return { ok: false, code: 'fetch_unavailable', error: 'fetch unavailable' }
   const trimmed = String(tag || '').trim()
-  let metaUrl = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`
+  let metaUrl = `https://api.github.com/repos/${ASSET_REPO}/releases/latest`
   if (trimmed) {
     const normalized = normalizeTag(trimmed)
     if (!normalized || !isReleaseTag(normalized)) {
       return { ok: false, code: 'kernel_tag_invalid', error: 'Release tag 必须是 vX.Y.Z' }
     }
-    metaUrl = `https://api.github.com/repos/${GITHUB_REPO}/releases/tags/${normalized}`
+    metaUrl = `https://api.github.com/repos/${ASSET_REPO}/releases/tags/${normalized}`
   }
   let payload
   try {

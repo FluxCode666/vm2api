@@ -204,7 +204,7 @@ export function AboutPane() {
           </p>
           <pre className='overflow-x-auto rounded-md bg-muted px-3 py-2 font-mono text-xs'>
             {data?.upgrade_command ||
-              'curl -sSL https://raw.githubusercontent.com/dofastted/vm2api/main/deploy/install.sh | sudo bash -s -- upgrade'}
+              'curl -sSL https://raw.githubusercontent.com/FluxCode666/vm2api/main/deploy/install.sh | sudo bash -s -- upgrade'}
           </pre>
           <div className='flex flex-wrap gap-2'>
             <Button

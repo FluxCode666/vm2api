@@ -8,6 +8,7 @@ import {
   ensureKvmMachineRecord,
   kvmEnvMapIncomplete,
   kvmMachineFields,
+  kvmSmbiosDrift,
 } from '../../src/lib/vm/kvm-machine.mjs'
 import { buildKvmRunArgs } from '../../src/lib/vm/vm-runtime.mjs'
 
@@ -66,6 +67,43 @@ test('kvmEnvMapIncomplete detects missing runner env', () => {
     ]),
     false,
   )
+})
+
+test('kvmSmbiosDrift detects a container built from a stale record', () => {
+  const vm = {
+    id: 'vm-02',
+    machine: {
+      smbios: {
+        manufacturer: 'Dell Inc.',
+        product: 'OptiPlex 7090',
+        version: '1.0',
+        family: 'OptiPlex',
+        serial: 'ABC123',
+      },
+    },
+  }
+  const env = (overrides = {}) => {
+    const map = {
+      KIN_KVM_SMBIOS_MANUFACTURER: 'Dell Inc.',
+      KIN_KVM_SMBIOS_PRODUCT: 'OptiPlex 7090',
+      KIN_KVM_SMBIOS_VERSION: '1.0',
+      KIN_KVM_SMBIOS_FAMILY: 'OptiPlex',
+      KIN_KVM_SMBIOS_SERIAL: 'ABC123',
+      ...overrides,
+    }
+    return { ok: true, stdout: JSON.stringify(Object.entries(map).map(([k, v]) => `${k}=${v}`)) }
+  }
+  // The observed production state: guest DMI carried ASUS / System Product Name.
+  assert.equal(
+    kvmSmbiosDrift('kin-02', vm, {
+      run: () => env({ KIN_KVM_SMBIOS_MANUFACTURER: 'ASUS', KIN_KVM_SMBIOS_PRODUCT: 'System Product Name' }),
+    }),
+    true,
+  )
+  assert.equal(kvmSmbiosDrift('kin-02', vm, { run: () => env() }), false)
+  assert.equal(kvmSmbiosDrift('kin-02', vm, { run: () => env({ KIN_KVM_SMBIOS_SERIAL: undefined }) }), true)
+  // A transient inspect failure must not force a rebuild.
+  assert.equal(kvmSmbiosDrift('kin-02', vm, { run: () => ({ ok: false, stdout: '', stderr: 'daemon down' }) }), false)
 })
 
 test('buildKvmRunArgs uses backfilled machine identity', () => {

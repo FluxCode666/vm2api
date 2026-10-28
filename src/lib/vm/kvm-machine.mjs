@@ -116,6 +116,29 @@ export function kvmContainerEnvIncomplete(containerName, { run } = {}) {
   return kvmEnvMapIncomplete(env, env ? Object.entries(env).map(([k, v]) => `${k}=${v}`) : [])
 }
 
+/**
+ * True when the container's QEMU type=1 env disagrees with vm.machine.smbios.
+ * uuid is not compared: an empty record uuid falls back to the fingerprint file.
+ * A failed inspect returns false so a transient error never forces a rebuild.
+ */
+export function kvmSmbiosDrift(containerName, vm, { run } = {}) {
+  const env = readDockerContainerEnv(containerName, { run })
+  if (!env) return false
+  const smbios = kvmMachineFields(vm).smbios
+  const expected = {
+    KIN_KVM_SMBIOS_MANUFACTURER: smbios.manufacturer,
+    KIN_KVM_SMBIOS_PRODUCT: smbios.product,
+    KIN_KVM_SMBIOS_VERSION: smbios.version,
+    KIN_KVM_SMBIOS_FAMILY: smbios.family,
+    KIN_KVM_SMBIOS_SERIAL: smbios.serial,
+  }
+  for (const [key, value] of Object.entries(expected)) {
+    if (!Object.prototype.hasOwnProperty.call(env, key)) return true
+    if (String(env[key]) !== String(value)) return true
+  }
+  return false
+}
+
 export function kvmMachineFields(vm) {
   const m = vm?.machine && typeof vm.machine === 'object' ? vm.machine : {}
   const smbios = m.smbios && typeof m.smbios === 'object' ? m.smbios : {}
