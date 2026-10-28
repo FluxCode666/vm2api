@@ -1,6 +1,6 @@
 # Issue 提交指南
 
-提交前按本页收集信息，再用 [Bug 报告表单](https://github.com/dofastted/vm2api/issues/new?template=bug_report.yml) 提交。信息齐全的 Issue 可以直接复现定位；缺版本、缺日志的 Issue 只能先回问。
+提交前按本页收集信息，再用 [Bug 报告表单](https://github.com/FluxCode666/vm2api/issues/new?template=bug_report.yml) 提交。信息齐全的 Issue 可以直接复现定位；缺版本、缺日志的 Issue 只能先回问。
 
 <p align="center">
   <img src="docs/images/issue-flow.svg" alt="vm2api Issue 提交路线图" width="100%" />
@@ -13,12 +13,12 @@
 
 ## 0. 提交前自查
 
-- [ ] 已升级到 [最新 Release](https://github.com/dofastted/vm2api/releases)，问题仍存在（升级：`curl -sSL https://raw.githubusercontent.com/dofastted/vm2api/main/deploy/install.sh | sudo bash -s -- upgrade`）
-- [ ] 已在 [Issues](https://github.com/dofastted/vm2api/issues?q=is%3Aissue) 搜索过错误码 / 关键字，没有重复
+- [ ] 已升级到 [最新 Release](https://github.com/FluxCode666/vm2api/releases)，问题仍存在（升级：`curl -sSL https://raw.githubusercontent.com/FluxCode666/vm2api/main/deploy/install.sh | sudo bash -s -- upgrade`）
+- [ ] 已在 [Issues](https://github.com/FluxCode666/vm2api/issues?q=is%3Aissue) 搜索过错误码 / 关键字，没有重复
 - [ ] 已对照 [CHANGELOG.md](CHANGELOG.md)，不是已知行为变更
 - [ ] 一个 Issue 只写一个问题；多个问题分开提
 
-功能建议走 [功能建议表单](https://github.com/dofastted/vm2api/issues/new?template=feature_request.yml)；使用交流走 [Telegram @VM2API](https://t.me/VM2API)。安全漏洞**不要**公开提 Issue，私信 Telegram 联系作者。
+功能建议走 [功能建议表单](https://github.com/FluxCode666/vm2api/issues/new?template=feature_request.yml)；使用交流走 [Telegram @VM2API](https://t.me/VM2API)。安全漏洞**不要**公开提 Issue，私信 Telegram 联系作者。
 
 ---
 
@@ -27,7 +27,7 @@
 ```bash
 cat /opt/vm2api/VERSION                                      # 控制面版本，例如 1.3.102
 docker inspect vm2api --format '{{.Config.Image}}'           # 镜像与 tag
-curl -sSL https://raw.githubusercontent.com/dofastted/vm2api/main/deploy/install.sh | sudo bash -s -- status
+curl -sSL https://raw.githubusercontent.com/FluxCode666/vm2api/main/deploy/install.sh | sudo bash -s -- status
 ```
 
 管理台 `设置 → 关于` 也能看到当前版本。同时说明：
@@ -176,7 +176,7 @@ VM 创建、导入、启动、重置失败时提供：
 
 ## 7. 提交与跟进
 
-1. 打开 [New issue](https://github.com/dofastted/vm2api/issues/new/choose) → **Bug 报告**，按表单逐项填写
+1. 打开 [New issue](https://github.com/FluxCode666/vm2api/issues/new/choose) → **Bug 报告**，按表单逐项填写
 2. 标题格式：`[Bug] <现象> (<版本>)`，例如 `[Bug] 创建 KVM 槽位卡在 provisioning (1.3.102)`
 3. 维护者回问时请在同一 Issue 补充，不要另开新 Issue
 4. 修复会在 [CHANGELOG.md](CHANGELOG.md) 与 Release 中注明；升级验证后请回复结果并关闭

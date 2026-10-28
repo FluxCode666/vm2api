@@ -893,7 +893,7 @@
 - 仓库只保留源码：`web/dist`、`bin/kin-*`、`share/wrap-cli` 的 ELF / glibc、`share/crag` 不再进 git，并已从全部历史中清除（所有 tag 的提交号随之改变）。控制台与 `kin-worker` / `kin-egress` 在镜像构建与 CI 中由源码编译；闭源 kernel、`kin-oauth-auth`、`cli-node`、`cc-node`、crag kernel 与 glibc shim 放在独立的 payload Release，由 `deploy/payload.json` 按 sha256 钉住，`npm run fetch:payload` 下载并校验。镜像额外带上 crag kernel，入口写进 `share/crag`。版本 Release 附件名不变。
 - amd64 源码安装（`install.sh --from-source` / 目录有 `.git`）此前只按 `docker-compose.yml` 拉 ghcr 镜像，并没有构建本机 checkout。现在安装 / 升级会在 `.env` 写 `COMPOSE_FILE=docker-compose.yml:docker-compose.build.yml`（已有值不覆盖），按 checkout 构建；面板一键更新不再重复叠加同一个构建文件。
 
-已部署机升级：镜像安装照常（一键脚本或面板更新），无迁移。源码安装（`--from-source` / 目录有 `.git`）这一次用新版 `curl -sSL https://raw.githubusercontent.com/dofastted/vm2api/main/deploy/install.sh | sudo bash -s -- upgrade`：新脚本 `git fetch --force --tags` 接受重写后的 tag，旧面板的一键更新会因 tag 冲突失败。源码构建需要能访问 GitHub Release 下载 payload。重启一次 Node，不必 `wrap-cli/sync`。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
+已部署机升级：镜像安装照常（一键脚本或面板更新），无迁移。源码安装（`--from-source` / 目录有 `.git`）这一次用新版 `curl -sSL https://raw.githubusercontent.com/FluxCode666/vm2api/main/deploy/install.sh | sudo bash -s -- upgrade`：新脚本 `git fetch --force --tags` 接受重写后的 tag，旧面板的一键更新会因 tag 冲突失败。源码构建需要能访问 GitHub Release 下载 payload。重启一次 Node，不必 `wrap-cli/sync`。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
 
 ## 1.3.139 — 2026-10-11
 
@@ -1833,7 +1833,7 @@
 
 - OpenAI 号池按权重、会话粘滞和 smart 分数选槽，不再按额度压力排序（#80）
 - cli-hop 缓存 TTL 跟设置 → 协议，缺省 **1h**，不再写死 5m。请求头 `x-kin-cache-ttl` 仍可覆盖。空的 kernel `default_cache_ttl` 也回落 1h（#81）
-- kernel 重装页可从本仓库 GitHub Release 下载 linux amd64 `kin-kernel`，校验 ELF 后写入并同步所选槽。下载地址只允许 `dofastted/vm2api`，失败或不是合法 ELF 时不写文件（#82）
+- kernel 重装页可从本仓库 GitHub Release 下载 linux amd64 `kin-kernel`，校验 ELF 后写入并同步所选槽。下载地址只允许 `FluxCode666/vm2api`，失败或不是合法 ELF 时不写文件（#82）
 - `session_slots` 是单槽同时在飞的座位上限；`max_sessions` 仍是不同对话窗口。粘滞账号暂停、等待队列满或预约失败时换到别的 VM。普通 502/503/504 冷却 15 秒并换号；Usage Policy 502 仍暂停该账号 1 小时，`slot_busy` 仍不停车（#83）
 
 已部署机升级：`bin/kin-kernel` 与 `share/wrap-cli/kin-kernel.bin` 有变，必须 `wrap-cli/sync` 并重启槽内 dataplane。不要 `docker rm` 槽。
